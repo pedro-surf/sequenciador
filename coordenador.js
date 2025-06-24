@@ -1,73 +1,79 @@
 const { create } = require('ipfs-http-client');
 const fs = require('fs');
 
-const AGENTES = ['agente-v1.js', 'agente-v2.js']; // Suas versões disponíveis
+const AGENTES = ['agente-v1.js', 'agente-v2.js'];
 const NOS = [
   { name: 'NoA', ipns: '/ipns/QmNodeAKey' },
   { name: 'NoB', ipns: '/ipns/QmNodeBKey' }
 ];
-
 const COORD_KEY = 'coordenador-key';
+const COORD_IPNS = '/ipns/QmCoordenadorIPNS';
 
 (async () => {
   const ipfs = create();
 
-  // Função para publicar agente no IPFS e atualizar IPNS
-  async function publicarAgente(arquivo) {
-    const agente = fs.readFileSync(arquivo);
-    const result = await ipfs.add(agente);
-    console.log(`📦 ${arquivo} publicado em:`, result.cid.toString());
-    await ipfs.name.publish(`/ipfs/${result.cid.toString()}`, { key: COORD_KEY });
-    return result.cid.toString();
+  // Tenta recuperar último manifesto
+  let etapaAtual = 0;
+  let cidAnterior = null;
+
+  try {
+    const resolved = await ipfs.name.resolve(COORD_IPNS);
+    const stream = ipfs.cat(resolved.replace('/ipfs/', ''));
+    let data = '';
+    for await (const chunk of stream) {
+      data += chunk.toString();
+    }
+    const manifestoAnterior = JSON.parse(data);
+    const etapaNum = parseInt(manifestoAnterior.etapa.replace('v', ''));
+    etapaAtual = etapaNum;
+    cidAnterior = manifestoAnterior.cid;
+    console.log(`🔁 Retomando do manifesto v${etapaNum}`);
+  } catch (e) {
+    console.log("📄 Nenhum manifesto anterior encontrado. Começando do zero.");
   }
 
-  // Função para buscar resultados dos nós
-  async function buscarResultados() {
-    const resultados = [];
+  while (etapaAtual < AGENTES.length) {
+    console.log(`🚦 Etapa atual: v${etapaAtual + 1}`);
 
+    // Aguarda execução dos nós
+    const resultados = [];
     for (const no of NOS) {
       try {
-        const resolved = await ipfs.name.resolve(no.ipns);
-        // Obtem o conteúdo JSON do resultado
-        const stream = ipfs.cat(resolved.replace('/ipfs/', ''));
+        const res = await ipfs.name.resolve(no.ipns);
+        const stream = ipfs.cat(res.replace('/ipfs/', ''));
         let data = '';
         for await (const chunk of stream) {
           data += chunk.toString();
         }
         const json = JSON.parse(data);
-        resultados.push({ no: no.name, etapa: json.etapa, data: json.data });
-        console.log(`📥 Resultado de ${no.name}: etapa ${json.etapa} em ${json.data}`);
-      } catch (err) {
-        console.log(`⚠️ Erro ao consultar ${no.name}:`, err.message);
+        resultados.push({ no: no.name, etapa: json.etapa, manifesto: json.manifesto });
+      } catch (e) {
+        console.log(`⚠️ ${no.name} não respondeu:`, e.message);
       }
     }
-    return resultados;
-  }
 
-  // Começa publicando agente v1
-  let etapaAtual = 0;
-  await publicarAgente(AGENTES[etapaAtual]);
-
-  while (etapaAtual < AGENTES.length) {
-    console.log(`⏳ Aguardando nós concluírem etapa ${etapaAtual + 1}...`);
-    await new Promise(r => setTimeout(r, 10000)); // Espera 10s antes de checar
-
-    const resultados = await buscarResultados();
-
-    // Verifica se todos concluíram a etapa atual
-    const todosConcluidos = resultados.length === NOS.length &&
-      resultados.every(r => r.etapa === `v${etapaAtual + 1}`);
-
-    if (todosConcluidos) {
-      console.log(`✅ Todos concluíram etapa ${etapaAtual + 1}! Avançando...`);
-      etapaAtual++;
-      if (etapaAtual < AGENTES.length) {
-        await publicarAgente(AGENTES[etapaAtual]);
-      } else {
-        console.log("🎉 Todas as etapas concluídas!");
-      }
-    } else {
-      console.log("⏳ Ainda esperando todos os nós concluírem...");
+    const todosOK = resultados.length === NOS.length && resultados.every(r => r.etapa === `v${etapaAtual + 1}`);
+    if (!todosOK) {
+      console.log("⏳ Aguardando nós terminarem a etapa...");
+      await new Promise(r => setTimeout(r, 10000));
+      continue;
     }
+
+    // Publica próximo agente e manifesto IPLD
+    const agente = fs.readFileSync(AGENTES[etapaAtual]);
+    const agenteResult = await ipfs.add(agente);
+    const manifesto = {
+      etapa: `v${etapaAtual + 1}`,
+      cid: { "/": agenteResult.cid.toString() },
+      anterior: cidAnterior,
+      data: new Date().toISOString()
+    };
+
+    const { cid: cidManifesto } = await ipfs.add(JSON.stringify(manifesto));
+    await ipfs.name.publish(`/ipfs/${cidManifesto}`, { key: COORD_KEY });
+
+    console.log("✅ Novo manifesto publicado:", cidManifesto.toString());
+    etapaAtual++;
+    cidAnterior = { "/": agenteResult.cid.toString() };
   }
 })();

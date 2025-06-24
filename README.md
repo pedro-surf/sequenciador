@@ -3,24 +3,20 @@
 ## Objetivo  
 Executar tarefas distribuídas em ordem controlada, garantindo que múltiplos nós executem agentes na sequência correta, com confirmação de execução antes do avanço.
 
+
 ## Componentes
-- `agente-v1.js`: Coleta dados básicos do sistema  
-- `agente-v2.js`: Coleta dados adicionais (ex: uso de disco)  
-- `coordenador.js`: Publica agentes sequencialmente, checa resultados dos nós e só avança se todos concluírem  
-- `executor.js`: Executa o agente atual publicado, publica resultado, evita reexecução repetida  
+- `agente-v1.js`: Coleta dados básicos do sistema
+- `agente-v2.js`: Coleta dados adicionais (ex: uso de disco)
+- `coordenador.js`: Publica o agente e consulta os nós, usando manifesto IPLD encadeado
+- `executor.js`: Cada nó usa para executar o agente apontado pelo manifesto, publica resultado versionado
 - `gerar_chave_ipns.js`: Gera e salva a chave IPNS para o nó
-- `atualizar_ipns.js`: Atualiza manualmente IPNS com novo arquivo
+- `atualizar_ipns.js`: Script auxiliar para atualizar IPNS manualmente
 
-## Arquitetura e Fluxo
-
-1. **Coordenador** publica o agente da etapa atual no seu IPNS.  
-2. Cada **nó executa o executor.js**, que:  
-   - Consulta o IPNS do coordenador para saber qual agente executar  
-   - Verifica se já executou essa versão (para evitar repetição)  
-   - Executa o agente e publica o resultado no IPFS, atualizando seu próprio IPNS  
-3. O **coordenador monitora** os IPNS dos nós, baixando os resultados e verificando a etapa executada.  
-4. Quando **todos os nós confirmam execução da etapa atual**, o coordenador publica a próxima versão do agente, liberando a próxima etapa.  
-5. O processo se repete até o fim das etapas.
+## Fluxo
+1. **Coordenador** consulta seu próprio IPNS, lê último manifesto IPLD e descobre a etapa atual.
+2. Cada executor lê o manifesto atual, executa o agente e publica seu resultado versionado (com link ao manifesto).
+3. O coordenador aguarda que todos os nós publiquem resultados com a etapa correspondente.
+4. Quando todos respondem, ele publica o próximo agente e um novo manifesto IPLD, apontando para o anterior.
 
 ## Requisitos
 - Node.js
@@ -44,7 +40,7 @@ node coordenador.js
 node executor.js
 ```
 
-### 4. Atualizar IPNS manualmente
+### 4. (Opcional) Atualizar IPNS manualmente
 ```bash
 node atualizar_ipns.js resultado.json
 ```
